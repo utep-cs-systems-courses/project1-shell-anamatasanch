@@ -45,9 +45,7 @@ def execute(command):
 	os.write(2, ("command %s not found \n" % (command[0])).encode())
 	sys.exit(1)
 
-def pipe(command):
-	pid = os.getpid()               # get and remember pid
-	
+def pipe(command):	
 	write = command[0:command.index("|")]
 	read = command[command.index("|") + 1:]
 
@@ -60,6 +58,7 @@ def pipe(command):
 	elif rc == 0:                   #  child - will write to pipe
 		os.close(1)                 # redirect child's stdout
 		os.dup(pw)
+		os.set_inheritable(1, True)
 		for fd in (pr, pw):
 			os.close(fd)
 		execute(write)
@@ -68,6 +67,7 @@ def pipe(command):
 	else:                           # parent (forked ok)
 		os.close(0)
 		os.dup(pr)
+		os.set_inheritable(0, True)
 		for fd in (pw, pr):
 			os.close(fd)
 		if "|" in read:
