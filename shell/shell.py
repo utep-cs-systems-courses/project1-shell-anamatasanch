@@ -8,11 +8,13 @@ def redirect(command):
 		os.close(1)
 		os.open(command[command.index('>') + 1], os.O_CREAT | os.O_WRONLY)
 		os.set_inheritable(1, True)
+		command.remove(">")
 	
 	elif "<" in command:
 		os.close(0)
 		os.open(command[command.index('<') + 1], os.O_RDONLY)
 		os.set_inheritable(0, True)
+		command.remove("<")
 
 	for dir in re.split(":", os.environ["PATH"]):
 		program = "%s/%s" % (dir, command[0])
@@ -58,7 +60,7 @@ def pipe(command):
 	elif rc == 0:                   #  child - will write to pipe
 		os.close(1)                 # redirect child's stdout
 		os.dup(pw)
-		os.set_inheritable(1, True)
+		os.set_inheritable(1, True) #attach stoud to pipe inheritable
 		for fd in (pr, pw):
 			os.close(fd)
 		execute(write)
@@ -67,7 +69,7 @@ def pipe(command):
 	else:                           # parent (forked ok)
 		os.close(0)
 		os.dup(pr)
-		os.set_inheritable(0, True)
+		os.set_inheritable(0, True) #attach stin to pipe inheritable
 		for fd in (pw, pr):
 			os.close(fd)
 		if "|" in read:
@@ -101,11 +103,12 @@ def readCommand(command):
 			sys.exit(1)
 		elif rc == 0:                   # child
 			execute(command)
+			sys.exit(0)
 		else:                           # parent (forked ok)
 			if "&" not in command:
 				val = os.wait()
 				if val[1] != 0 and val[1] != 256:
-					os.write(2, ("Program terminated with exit code: %d\n" % val[1]).encode())
+					os.write(1, ("Program terminated with exit code: %d\n" % val[1]).encode())
 
 def menu():
 	while True:
