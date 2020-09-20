@@ -1,86 +1,135 @@
+#! /usr/bin/env python3
+
 import os, sys, time, re, fileinput
 
-def pipe():
-    pid = os.getpid()               # get and remember pid
 
-    pr,pw = os.pipe()
-    for f in (pr, pw):
-        os.set_inheritable(f, True)
-    print("pipe fds: pr=%d, pw=%d" % (pr, pw))    
-    print("About to fork (pid=%d)" % pid)
-    
-    rc = os.fork()
-    
-    if rc < 0:
-        print("fork failed, returning %d\n" % rc, file=sys.stderr)
-        sys.exit(1)    
-    elif rc == 0:                   #  child - will write to pipe
-        print("Child: My pid==%d.  Parent's pid=%d" % (os.getpid(), pid), file=sys.stderr)
-        args = ["wc", "p3-exec.py"]    
-        os.close(1)                 # redirect child's stdout
-        os.dup(pw)
-        for fd in (pr, pw):
-            os.close(fd)
-        print("hello from child")                 
-    else:                           # parent (forked ok)
-        print("Parent: My pid==%d.  Child's pid=%d" % (os.getpid(), rc), file=sys.stderr)
-        os.close(0)
-        os.dup(pr)
-        for fd in (pw, pr):
-            os.close(fd)
-        for line in fileinput.input():
-            print("From child: <%s>" % line)
+def redirect(command):
+	if ">" in command:
+		os.close(1)
+		os.open(command[command.index('>') + 1], os.O_CREAT | os.O_WRONLY)
+		os.set_inheritable(1, True)
+	
+	elif "<" in command:
+		os.close(0)
+		os.open(command[command.index('<') + 1], os.O_RDONLY)
+		os.set_inheritable(0, True)
 
+	for dir in re.split(":", os.environ["PATH"]):
+		program = "%s/%s" % (dir, command[0])
+		try:
+			os.execve(program, command, os.environ)
+		except FileNotFoundError:  
+			pass  #keep trying
 
-def execute():    
-    pid = os.getpid()               # get and remember pid
-    
-    os.write(1, ("About to fork (pid=%d)\n" % pid).encode())
-    
-    rc = os.fork()
-    
-    if rc < 0:
-        os.write(2, ("fork failed, returning %d\n" % rc).encode())
-        sys.exit(1)
-    
-    elif rc == 0:                   # child
-        os.write(1, ("Child: My pid==%d.  Parent's pid=%d\n" % 
-                     (os.getpid(), pid)).encode())
-        args = ["wc", "p3-exec.py"]
-    
-        os.close(1)                 # redirect child's stdout
-        os.open("p4-output.txt", os.O_CREAT | os.O_WRONLY);
-        os.set_inheritable(1, True)
-    
-        for dir in re.split(":", os.environ['PATH']): # try each directory in path
-            program = "%s/%s" % (dir, args[0])
-            try:
-                os.execve(program, args, os.environ) # try to exec program
-            except FileNotFoundError:             # ...expected
-                pass                              # ...fail quietly 
-    
-        os.write(2, ("Child:    Error: Could not exec %s\n" % args[0]).encode())
-        sys.exit(1)                 # terminate with error
-    
-    else:                           # parent (forked ok)
-        os.write(1, ("Parent: My pid=%d.  Child's pid=%d\n" % 
-                     (pid, rc)).encode())
-        childPidCode = os.wait()
-        os.write(1, ("Parent: Child %d terminated with exit code %d\n" % 
-                     childPidCode).encode())
+	os.write(2, ("Command not found \n").encode())
+	sys.exit(1)
 
-def tokenize(prompt):
-    prompt = prompt.lower()
-    return prompt.split()
+def execute(command):
+	if ">" in command or "<" in command:
+		redirect(command)
+	
+	elif "/" in command[0]:
+		try:
+			os.execve(command[0], command, os.environ)
+		except FileNotFoundError:
+			pass
+	
+	else:
+		for dir in re.split(":", os.environ["PATH"]):
+			program = "%s/%s" % (dir, command[0])
+			try:
+				os.execve(program, command, os.environ) 
+			except FileNotFoundError:
+				pass #keep trying
+
+	os.write(2, ("command %s not found \n" % (command[0])).encode())
+	sys.exit(1)
+
+def pipe(command):
+	pid = os.getpid()               # get and remember pid
+	
+	write = command[0:command.index("|")]
+	read = command[command.index("|") + 1:]
+
+	pr,pw = os.pipe()
+	rc = os.fork()
+
+	if rc < 0:
+		os.write(2, ("fork failed, returning %d\n" % rc).encode())
+		sys.exit(1)
+	elif rc == 0:                   #  child - will write to pipe
+		os.close(1)                 # redirect child's stdout
+		os.dup(pw)
+		for fd in (pr, pw):
+			os.close(fd)
+		execute(write)
+		os.write(2, ("Could not execute").encode())
+		sys.exit(1)
+	else:                           # parent (forked ok)
+		os.close(0)
+		os.dup(pr)
+		for fd in (pw, pr):
+			os.close(fd)
+		if "|" in read:
+			pipe(read)
+		execute(read)
+		os.write(2, ("Could not execute").encode())
+		sys.exit(1)
+
+def readCommand(command):
+	if command[0] == 'exit':
+		sys.exit()
+	
+	elif command[0] == 'cd':
+		try:
+			if len(command) == 2:
+				os.chdir(command[1])
+		except FileNotFoundError:
+			os.write(2, ("The directory " + command[1] + " does not exist.").encode())
+		except:
+			os.write(2, ("Please enter a valid directory").encode())
+	
+	elif "|" in command:
+		pipe(command)
+		pass
+	else:
+		pid = os.getpid()               # get and remember pid
+		rc = os.fork()
+		
+		if rc < 0:
+			os.write(2, ("fork failed, returning %d\n" % rc).encode())
+			sys.exit(1)
+		elif rc == 0:                   # child
+			execute(command)
+		else:                           # parent (forked ok)
+			if "&" not in command:
+				val = os.wait()
+				if val[1] != 0 and val[1] != 256:
+					os.write(2, ("Program terminated with exit code: %d\n" % val[1]).encode())
 
 def menu():
-    while True:
-        #Check PS1
-        if 'PS1' in os.environ:
-            os.write(1, (os.environ['PS1']).encode())
-        else:
-            #If there is no PS1, just show $
-            os.write(1, ('$ ').encode())
-    
+	while True:
+		prompt = '$ '
+		
+		#Check PS1
+		if 'PS1' in os.environ:
+			prompt = os.environ['PS1']
+
+		#File descriptor 1 is stdout
+		os.write(1, prompt.encode())
+		#File descriptor 0 is stdin
+		userin = os.read(0, 10000)
+		
+	
+		lines = re.split(b"\n", userin)
+		
+		if len(lines)>0:
+			for line in lines:
+				line = line.decode()
+				split_line = line.split()
+				if len(split_line)>0:
+					readCommand(split_line)
+		break 
+
 if __name__ == "__main__":
     menu()
